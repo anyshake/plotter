@@ -7,16 +7,21 @@ import numpy
 import requests
 import datetime
 
-ts_offset = 0
-show_interval = 60
-sampling_rate = 100
-scaling_range = 200000
+station_net = "AS" # Station network code
+station_stn = "SHAKE" # Station station code
+station_loc = "00" # Station location code
+station_address = "127.0.0.1:8073" # Observer address
+
+ts_offset = 0 # Data timestamp offset
+show_interval = 60 # Helicorder Y-axes minutes
+sampling_rate = 100 # Data sampling rate
+scaling_range = 100000 # Helicorder scaling range
 
 def make_trace(channel, sps, counts_list, timestamp):
-    trace = obspy.core.Trace(data = numpy.ma.MaskedArray(counts_list, dtype = numpy.int32))	
-    trace.stats.network = "AS"
-    trace.stats.station = "SHAKE"
-    trace.stats.location = "00"
+    trace = obspy.core.Trace(data=numpy.ma.MaskedArray(counts_list, dtype=numpy.float64))
+    trace.stats.network = station_net
+    trace.stats.station = station_stn
+    trace.stats.location = station_loc
     trace.stats.channel = channel
     trace.stats.sampling_rate = sps
     trace.stats.starttime = obspy.UTCDateTime(timestamp)
@@ -41,7 +46,7 @@ def get_data(start_time, end_time, max_interval = 3600000):
         current_end_time = min(start_time + max_interval, end_time)
         payload = {"start": start_time, "end": current_end_time, "format": "json"}
         print(payload)
-        response = requests.post("http://127.0.0.1:8073/api/v1/history", data = payload, timeout = 15).json()["data"]
+        response = requests.post(f"http://{station_address}/api/v1/history", data = payload, timeout = 15).json()["data"]
         for i in range(len(response)):
             data["BHZ"].extend(response[i]["ehz"])
         start_time = current_end_time

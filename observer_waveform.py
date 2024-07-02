@@ -10,10 +10,17 @@ import websockets
 import matplotlib.pyplot
 import matplotlib.animation
 
-time_span = 120
-refresh_time = 1000
-window_size = 2
-overlap_percent = 86
+station_net = "AS" # Station network code
+station_stn = "SHAKE" # Station station code
+station_loc = "00" # Station location code
+channel_prefix = "E" # Station channel prefix code E.g. EHx == E, BHx == B
+station_address = "127.0.0.1:8073" # Observer address
+
+time_span = 120 # Time span in seconds
+refresh_time = 1000 # Refresh time in milliseconds
+window_size = 2 # Spectrogram window size in seconds
+overlap_percent = 86 # Spectrogram overlap in percent
+spectrogram_power_range = [20, 120] # Spectrogram power range in dB
 
 fig, axs = matplotlib.pyplot.subplots(6, 1, num="Observer Waveform", figsize=(12.0, 8.0))
 matplotlib.pyplot.subplots_adjust(left=0, right=1, top=1, bottom=0, hspace=0, wspace=0)
@@ -26,9 +33,9 @@ def resample_trace(trace, target_sampling_rate):
 
 def make_trace(channel, sps, counts_list, timestamp):
     trace = obspy.core.Trace(data=numpy.ma.MaskedArray(counts_list, dtype=numpy.float64))
-    trace.stats.network = "AS"
-    trace.stats.station = "SHAKE"
-    trace.stats.location = "00"
+    trace.stats.network = station_net
+    trace.stats.station = station_stn
+    trace.stats.location = station_loc
     trace.stats.channel = channel
     trace.stats.sampling_rate = sps
     trace.stats.starttime = obspy.UTCDateTime(timestamp)
@@ -38,13 +45,13 @@ async def get_data():
     global bhe_data, bhn_data, bhz_data
     while True:
         try:
-            async with websockets.connect(f"ws://127.0.0.1:8073/api/v1/socket") as websocket:
+            async with websockets.connect(f"ws://{station_address}/api/v1/socket") as websocket:
                 while True:
                     data = json.loads(await websocket.recv())
                     timestamp = data["ts"] / 1000
-                    bhe_data = make_trace("BHE", len(data["ehe"]), data["ehe"], timestamp)
-                    bhn_data = make_trace("BHN", len(data["ehn"]), data["ehn"], timestamp)
-                    bhz_data = make_trace("BHZ", len(data["ehz"]), data["ehz"], timestamp)
+                    bhe_data = make_trace(f"{channel_prefix}HE", len(data["ehe"]), data["ehe"], timestamp)
+                    bhn_data = make_trace(f"{channel_prefix}HN", len(data["ehn"]), data["ehn"], timestamp)
+                    bhz_data = make_trace(f"{channel_prefix}HZ", len(data["ehz"]), data["ehz"], timestamp)
         except Exception as e:
             print(e)
             time.sleep(0.5)
@@ -55,7 +62,7 @@ def update(frame):
         st_bhe = bhe_stream.copy().detrend("linear")
         st_bhn = bhn_stream.copy().detrend("linear")
         st_bhz = bhz_stream.copy().detrend("linear")
-        for i, st, component in zip(range(3), [st_bhe, st_bhn, st_bhz], ["BHE", "BHN", "BHZ"]):
+        for i, st, component in zip(range(3), [st_bhe, st_bhn, st_bhz], [f"{channel_prefix}HE", f"{channel_prefix}HN", f"{channel_prefix}HZ"]):
             axs[i*2].clear()
             axs[i*2+1].clear()
             times = numpy.arange(st.stats.npts) / st.stats.sampling_rate
@@ -68,7 +75,7 @@ def update(frame):
             axs[i*2].set_ylim([numpy.min(waveform_data), numpy.max(waveform_data)])
             NFFT = int(st.stats.sampling_rate * window_size)
             noverlap = int(NFFT * (overlap_percent / 100))
-            Pxx, freqs, bins, im = axs[i*2+1].specgram(st.copy().filter("highpass", freq=0.1, zerophase=True).data, NFFT=NFFT, Fs=st.stats.sampling_rate, noverlap=noverlap, cmap="jet", vmin=20, vmax=120)
+            Pxx, freqs, bins, im = axs[i*2+1].specgram(st.copy().filter("highpass", freq=0.1, zerophase=True).data, NFFT=NFFT, Fs=st.stats.sampling_rate, noverlap=noverlap, cmap="jet", vmin=spectrogram_power_range[0], vmax=spectrogram_power_range[1])
             axs[i*2+1].set_ylim(0, 15)
             axs[i*2+1].yaxis.set_visible(False)
             axs[i*2+1].xaxis.set_visible(False)
