@@ -5,6 +5,7 @@ import matplotlib.pyplot
 
 sac_path = "./2024.183.03.18.27.0083.SHAKE.AS.00.EHZ.D.sac" # Station SAC file path
 channel_prefix = "E" # Station channel prefix code E.g. EHx == E, BHx == B
+channel_suffix = "Z" # Station channel suffix code E.g. xHZ == Z, xHE == E
 
 window_size = 2 # Spectrogram window size in seconds
 overlap_percent = 86 # Spectrogram overlap in percent
@@ -15,7 +16,7 @@ matplotlib.pyplot.subplots_adjust(left = 0.05, right = 0.95, top = 0.95, bottom 
 
 st_bhz = obspy.read(sac_path)[0]
 
-for i, st, component in zip(range(1), [st_bhz], [f"{channel_prefix}HZ"]):
+for i, st, component in zip(range(1), [st_bhz], [f"{channel_prefix}H{channel_suffix}"]):
     st = st.copy().detrend("linear")
     axs[i*2].clear()
     axs[i*2+1].clear()
