@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import json
 import time
@@ -22,13 +21,12 @@ window_size = 2 # Spectrogram window size in seconds
 overlap_percent = 86 # Spectrogram overlap in percent
 spectrogram_power_range = [20, 120] # Spectrogram power range in dB
 
-fig, axs = matplotlib.pyplot.subplots(6, 1, num="Observer Waveform", figsize=(12.0, 8.0))
+fig, axs = matplotlib.pyplot.subplots(6, 1, num="Observer Waveform", figsize=(9.6, 7.0))
 matplotlib.pyplot.subplots_adjust(left=0, right=1, top=1, bottom=0, hspace=0, wspace=0)
 
 def resample_trace(trace, target_sampling_rate):
     if trace.stats.sampling_rate != target_sampling_rate:
-        max_sampling_rate = max(trace.stats.sampling_rate, target_sampling_rate)
-        trace = trace.copy().resample(max_sampling_rate)
+        trace.interpolate(target_sampling_rate)
     return trace
 
 def make_trace(channel, sps, counts_list, timestamp):
@@ -59,48 +57,49 @@ async def get_data():
 
 def update(frame):
     try:
-        st_bhe = bhe_stream.copy().detrend("linear")
-        st_bhn = bhn_stream.copy().detrend("linear")
-        st_bhz = bhz_stream.copy().detrend("linear")
-        for i, st, component in zip(range(3), [st_bhe, st_bhn, st_bhz], [f"{channel_prefix}HE", f"{channel_prefix}HN", f"{channel_prefix}HZ"]):
+        # Resample new data to match the stream sampling rate
+        bhe_resampled = resample_trace(bhe_data, bhe_stream.stats.sampling_rate)
+        bhn_resampled = resample_trace(bhn_data, bhn_stream.stats.sampling_rate)
+        bhz_resampled = resample_trace(bhz_data, bhz_stream.stats.sampling_rate)
+        
+        # Update streams with fixed length
+        for stream, new_data in zip([bhe_stream, bhn_stream, bhz_stream], [bhe_resampled, bhn_resampled, bhz_resampled]):
+            new_samples = int(new_data.stats.npts)
+            stream_length = int(stream.stats.sampling_rate * time_span)
+            
+            if len(stream.data) >= stream_length:
+                stream.data = numpy.roll(stream.data, -new_samples)
+                stream.data[-new_samples:] = new_data.data
+            else:
+                stream.data = numpy.concatenate((stream.data, new_data.data))
+                if len(stream.data) > stream_length:
+                    stream.data = stream.data[-stream_length:]
+            
+            stream.stats.starttime = stream.stats.starttime + 1.0
+
+        # Plot data
+        for i, (stream, component) in enumerate(zip([bhe_stream, bhn_stream, bhz_stream], [f"{channel_prefix}HE", f"{channel_prefix}HN", f"{channel_prefix}HZ"])):
             axs[i*2].clear()
             axs[i*2+1].clear()
-            times = numpy.arange(st.stats.npts) / st.stats.sampling_rate
-            waveform_data = st.copy().filter("bandpass", freqmin=0.1, freqmax=10.0, zerophase=True).data
-            axs[i*2].plot(times, waveform_data, label=component, color="blue")
-            axs[i*2].legend(loc="upper left")
-            axs[i*2].xaxis.set_visible(False)
-            axs[i*2].yaxis.set_visible(False)
-            axs[i*2].set_xlim([times[0], times[-1]])
-            axs[i*2].set_ylim([numpy.min(waveform_data), numpy.max(waveform_data)])
-            NFFT = int(st.stats.sampling_rate * window_size)
+            times = numpy.arange(stream.stats.npts) / stream.stats.sampling_rate
+            waveform_data = stream.copy().filter("bandpass", freqmin=0.1, freqmax=10.0, zerophase=True).data
+            
+            if not numpy.any(numpy.isnan(waveform_data)) and not numpy.any(numpy.isinf(waveform_data)):
+                axs[i*2].plot(times, waveform_data, label=component, color="blue")
+                axs[i*2].legend(loc="upper left")
+                axs[i*2].xaxis.set_visible(False)
+                axs[i*2].yaxis.set_visible(False)
+                axs[i*2].set_xlim([times[0], times[-1]])
+                axs[i*2].set_ylim([numpy.min(waveform_data), numpy.max(waveform_data)])
+            
+            NFFT = int(stream.stats.sampling_rate * window_size)
             noverlap = int(NFFT * (overlap_percent / 100))
-            Pxx, freqs, bins, im = axs[i*2+1].specgram(st.copy().filter("highpass", freq=0.1, zerophase=True).data, NFFT=NFFT, Fs=st.stats.sampling_rate, noverlap=noverlap, cmap="jet", vmin=spectrogram_power_range[0], vmax=spectrogram_power_range[1])
-            axs[i*2+1].set_ylim(0, 15)
-            axs[i*2+1].yaxis.set_visible(False)
-            axs[i*2+1].xaxis.set_visible(False)
-
-        # Update bhe_stream
-        new_samples = int(bhe_data.stats.sampling_rate)
-        if len(bhe_stream.data) >= bhe_stream.stats.sampling_rate * time_span:
-            bhe_stream.data = numpy.delete(bhe_stream.data, slice(new_samples))
-        bhe_stream.data = numpy.concatenate((bhe_stream.data, resample_trace(bhe_data, bhe_stream.stats.sampling_rate).data))
-        bhe_stream.stats.starttime = bhe_stream.stats.starttime + 1.0
-
-        # Update bhn_stream
-        new_samples = int(bhn_data.stats.sampling_rate)
-        if len(bhn_stream.data) >= bhn_stream.stats.sampling_rate * time_span:
-            bhn_stream.data = numpy.delete(bhn_stream.data, slice(new_samples))
-        bhn_stream.data = numpy.concatenate((bhn_stream.data, resample_trace(bhn_data, bhn_stream.stats.sampling_rate).data))
-        bhn_stream.stats.starttime = bhn_stream.stats.starttime + 1.0
-
-        # Update bhz_stream
-        new_samples = int(bhz_data.stats.sampling_rate)
-        if len(bhz_stream.data) >= bhz_stream.stats.sampling_rate * time_span:
-            bhz_stream.data = numpy.delete(bhz_stream.data, slice(new_samples))
-        bhz_stream.data = numpy.concatenate((bhz_stream.data, resample_trace(bhz_data, bhz_stream.stats.sampling_rate).data))
-        bhz_stream.stats.starttime = bhz_stream.stats.starttime + 1.0
-
+            spec_data = stream.copy().filter("highpass", freq=0.1, zerophase=True).data
+            if not numpy.any(numpy.isnan(spec_data)) and not numpy.any(numpy.isinf(spec_data)):
+                axs[i*2+1].specgram(spec_data, NFFT=NFFT, Fs=stream.stats.sampling_rate, noverlap=noverlap, cmap="jet", vmin=spectrogram_power_range[0], vmax=spectrogram_power_range[1])
+                axs[i*2+1].set_ylim(0, 15)
+                axs[i*2+1].yaxis.set_visible(False)
+                axs[i*2+1].xaxis.set_visible(False)
     except Exception as e:
         print(f"Error plotting data: {e}")
 
@@ -111,11 +110,10 @@ if __name__ == "__main__":
     bhe_stream = bhe_data.copy()
     bhn_stream = bhn_data.copy()
     bhz_stream = bhz_data.copy()
-    for _ in range(time_span):
-        bhe_stream.data = numpy.concatenate((bhe_stream.data, resample_trace(bhe_data, bhe_stream.stats.sampling_rate).data))
-        bhn_stream.data = numpy.concatenate((bhn_stream.data, resample_trace(bhn_data, bhn_stream.stats.sampling_rate).data))
-        bhz_stream.data = numpy.concatenate((bhz_stream.data, resample_trace(bhz_data, bhz_stream.stats.sampling_rate).data))
-        time.sleep(1)
+    stream_length = int(bhe_stream.stats.sampling_rate * time_span)
+    bhe_stream.data = numpy.zeros(stream_length)
+    bhn_stream.data = numpy.zeros(stream_length)
+    bhz_stream.data = numpy.zeros(stream_length)
     ani = matplotlib.animation.FuncAnimation(fig, update, interval=refresh_time, cache_frame_data=False)
     matplotlib.pyplot.show()
     os._exit(0)
