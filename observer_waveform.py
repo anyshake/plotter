@@ -5,6 +5,7 @@ import time
 import obspy
 import numpy
 import asyncio
+import requests
 import threading
 import websockets
 import matplotlib.pyplot
@@ -13,7 +14,7 @@ import matplotlib.animation
 station_net = "AS" # Station network code
 station_stn = "SHAKE" # Station station code
 station_loc = "00" # Station location code
-channel_prefix = "E" # Station channel prefix code E.g. EHx == E, BHx == B
+channel_prefix = "EH" # Fallback Station channel prefix code
 station_address = "127.0.0.1:8073" # Observer address
 
 time_span = 120 # Time span in seconds
@@ -40,6 +41,14 @@ def make_trace(channel, sps, counts_list, timestamp):
     trace.stats.starttime = obspy.UTCDateTime(timestamp)
     return trace
 
+def get_channel_prefix():
+    try:
+        data = requests.get(f"http://{station_address}/api/v1/station", timeout = 5).json()["data"]
+        channel_prefix = data["stream"]["channel"]
+        return channel_prefix
+    except Exception as e:
+        print(e)
+
 async def get_data():
     global bhe_data, bhn_data, bhz_data
     while True:
@@ -47,10 +56,10 @@ async def get_data():
             async with websockets.connect(f"ws://{station_address}/api/v1/socket") as websocket:
                 while True:
                     data = json.loads(await websocket.recv())
-                    timestamp = data["ts"] / 1000
-                    bhe_data = make_trace(f"{channel_prefix}HE", len(data["ehe"]), data["ehe"], timestamp)
-                    bhn_data = make_trace(f"{channel_prefix}HN", len(data["ehn"]), data["ehn"], timestamp)
-                    bhz_data = make_trace(f"{channel_prefix}HZ", len(data["ehz"]), data["ehz"], timestamp)
+                    timestamp = data["timestamp"] / 1000
+                    bhe_data = make_trace(f"{channel_prefix}E", data["sample_rate"], data["e_axis"], timestamp)
+                    bhn_data = make_trace(f"{channel_prefix}N", data["sample_rate"], data["n_axis"], timestamp)
+                    bhz_data = make_trace(f"{channel_prefix}Z", data["sample_rate"], data["z_axis"], timestamp)
         except Exception as e:
             print(e)
             time.sleep(0.5)
@@ -79,7 +88,7 @@ def update(frame):
             stream.stats.starttime = stream.stats.starttime + 1.0
 
         # Plot data
-        for i, (stream, component) in enumerate(zip([bhe_stream, bhn_stream, bhz_stream], [f"{channel_prefix}HE", f"{channel_prefix}HN", f"{channel_prefix}HZ"])):
+        for i, (stream, component) in enumerate(zip([bhe_stream, bhn_stream, bhz_stream], [f"{channel_prefix}E", f"{channel_prefix}N", f"{channel_prefix}Z"])):
             axs[i*2].clear()
             axs[i*2+1].clear()
             times = numpy.arange(stream.stats.npts) / stream.stats.sampling_rate
@@ -105,6 +114,7 @@ def update(frame):
         print(f"Error plotting data: {e}")
 
 if __name__ == "__main__":
+    channel_prefix = get_channel_prefix()
     thread1 = threading.Thread(target=asyncio.run, args=(get_data(),))
     thread1.start()
     time.sleep(3)

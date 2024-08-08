@@ -19,7 +19,6 @@ hours = 6 # Plot X-axes hours
 ts_offset = 0 # Data timestamp offset
 show_interval = 60 # Plot Y-axes minutes
 update_interval = 30 # Plot update interval
-sampling_rate = 100 # Data sampling rate
 scaling_range = 100000 # Plot scaling range
 
 def make_trace(channel, sps, counts_list, timestamp):
@@ -42,18 +41,19 @@ def get_data(start_time, end_time, max_interval = 3600000):
     data = {"BHZ": []}
     while start_time < end_time:
         current_end_time = min(start_time + max_interval, end_time)
-        payload = {"start": start_time, "end": current_end_time, "format": "json"}
+        payload = {"channel": "", "start": start_time, "end": current_end_time, "format": "json"}
         response = requests.post(f"http://{station_address}/api/v1/history", data = payload, timeout = 15).json()["data"]
+        sample_rate = response[0]["sample_rate"]
         for i in range(len(response)):
             if i > 0:
-                delta = response[i]["ts"] - response[i - 1]["ts"]
+                delta = response[i]["timestamp"] - response[i - 1]["timestamp"]
                 if delta > 1100:
-                    samples_to_fill = int(delta / (1000 / sampling_rate))
-                    average_value = sum(response[i - 1]["ehz"]) / len(response[i - 1]["ehz"])
+                    samples_to_fill = int(delta / (1000 / sample_rate))
+                    average_value = sum(response[i - 1]["z_axis"]) / len(response[i - 1]["z_axis"])
                     data["BHZ"].extend([average_value] * samples_to_fill)
-            data["BHZ"].extend(response[i]["ehz"])
+            data["BHZ"].extend(response[i]["z_axis"])
         start_time = current_end_time
-    return data
+    return sample_rate, data
 
 def update(frame):
     try:
@@ -65,7 +65,7 @@ def update(frame):
         start_time_utc = start_time_utc.replace(minute = 0, second = 0, microsecond = 0)
         end_time_utc = now_utc
         data = get_data(int(start_time_utc.timestamp() * 1000) + ts_offset, int(end_time_utc.timestamp() * 1000) + ts_offset)
-        bhz_data = make_trace("BHZ", sampling_rate, data["BHZ"], start_time_utc.timestamp())
+        bhz_data = make_trace("BHZ", data[0], data[1]["BHZ"], start_time_utc.timestamp())
         bhz_data.filter("bandpass", freqmin = 0.1, freqmax = 10.0, zerophase = True)
         bhz_data.plot(ax = ax, fig = fig, type = "dayplot", title = "", color = ["k", "r", "b", "g"],
                     tick_format = "%H:%M", interval = show_interval,

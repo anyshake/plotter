@@ -14,7 +14,6 @@ station_address = "127.0.0.1:8073" # Observer address
 
 ts_offset = 0 # Data timestamp offset
 show_interval = 60 # Helicorder Y-axes minutes
-sampling_rate = 100 # Data sampling rate
 scaling_range = 100000 # Helicorder scaling range
 
 def make_trace(channel, sps, counts_list, timestamp):
@@ -44,19 +43,19 @@ def get_data(start_time, end_time, max_interval = 3600000):
     data = {"BHZ": []}
     while start_time < end_time:
         current_end_time = min(start_time + max_interval, end_time)
-        payload = {"start": start_time, "end": current_end_time, "format": "json"}
-        print(payload)
+        payload = {"channel": "", "start": start_time, "end": current_end_time, "format": "json"}
         response = requests.post(f"http://{station_address}/api/v1/history", data = payload, timeout = 15).json()["data"]
+        sample_rate = response[0]["sample_rate"]
         for i in range(len(response)):
-            data["BHZ"].extend(response[i]["ehz"])
+            data["BHZ"].extend(response[i]["z_axis"])
         start_time = current_end_time
-    return data
+    return sample_rate, data
 
 if __name__ == "__main__":
     start_time = get_time()
     end_time = int(time.time() * 1000)
     data = get_data(start_time + ts_offset, end_time + ts_offset)
-    bhz_data = make_trace("BHZ", sampling_rate, data["BHZ"], start_time / 1000)
+    bhz_data = make_trace("BHZ", data[0], data[1]["BHZ"], start_time / 1000)
     bhz_data.filter("bandpass", freqmin = 0.1, freqmax = 10.0, zerophase = True)
     bhz_data.plot(type = "dayplot", title = "", color = ["k", "r", "b", "g"],
             tick_format = "%H:%M", interval = show_interval,
