@@ -16,7 +16,7 @@ time_span = 120 # Time span in seconds
 refresh_time = 1000 # Refresh time in milliseconds
 window_size = 2 # Spectrogram window size in seconds
 overlap_percent = 86 # Spectrogram overlap in percent
-spectrogram_power_range = [20, 120] # Spectrogram power range in dB
+spectrogram_power_range = [20, 160] # Spectrogram power range in dB
 
 fig, axs = matplotlib.pyplot.subplots(6, 1, num = "Observer Waveform", figsize = (9.6, 7.0))
 matplotlib.pyplot.subplots_adjust(left = 0, right = 1, top = 1, bottom = 0, hspace = 0, wspace = 0)
@@ -79,30 +79,31 @@ def get_data(host, port):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.connect((host, port))
     print(f"Connected to {host}:{port}")
-
     try:
         while True:
-            data = client_socket.recv(16384)
-            if not data:
-                break
-            messages = data.decode("utf-8").strip().split("\r\n")
-            for message in messages:
-                if compare_checksum(message):
-                    fields = message.split("*")[0].split(",")
-                    network_code = fields[0][1:]
-                    station_code = fields[1]
-                    location_code = fields[2]
-                    channel_code = fields[3]
-                    timestamp = int(fields[4]) / 1000
-                    sample_rate = int(fields[5])
-                    samples = list(map(int, fields[6:-1]))
-                    if channel_code[2] == "E":
-                        bhe_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
-                    elif channel_code[2] == "N":
-                        bhn_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
-                    elif channel_code[2] == "Z":
-                        bhz_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
-
+            try:
+                data = client_socket.recv(16384)
+                if not data:
+                    break
+                messages = data.decode("utf-8").strip().split("\r\n")
+                for message in messages:
+                    if compare_checksum(message):
+                        fields = message.split("*")[0].split(",")
+                        network_code = fields[0][1:]
+                        station_code = fields[1]
+                        location_code = fields[2]
+                        channel_code = fields[3]
+                        timestamp = int(fields[4]) / 1000
+                        sample_rate = int(fields[5])
+                        samples = list(map(int, fields[6:-1]))
+                        if channel_code[2] == "E":
+                            bhe_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
+                        elif channel_code[2] == "N":
+                            bhn_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
+                        elif channel_code[2] == "Z":
+                            bhz_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
+            except:
+                continue
     finally:
         client_socket.close()
 
