@@ -19,7 +19,7 @@ hours = 6 # Plot X-axes hours
 ts_offset = 0 # Data timestamp offset
 show_interval = 60 # Plot Y-axes minutes
 update_interval = 30 # Plot update interval
-scaling_range = 100000 # Plot scaling range
+scaling_range = 1000000 # Plot scaling range
 
 def make_trace(channel, sps, counts_list, timestamp):
     trace = obspy.core.Trace(data=numpy.ma.MaskedArray(counts_list, dtype=numpy.float64))
