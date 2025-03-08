@@ -9,7 +9,7 @@ channel_suffix = "Z" # Station channel suffix code E.g. xHZ == Z, xHE == E
 
 window_size = 2 # Spectrogram window size in seconds
 overlap_percent = 86 # Spectrogram overlap in percent
-spectrogram_power_range = [20, 120] # Spectrogram power range in dB
+spectrogram_power_range = [20, 160] # Spectrogram power range in dB
 
 fig, axs = matplotlib.pyplot.subplots(2, 1, figsize = (12.0, 8.0))
 matplotlib.pyplot.subplots_adjust(left = 0.05, right = 0.95, top = 0.95, bottom = 0.05, hspace = 0.05, wspace = 0)

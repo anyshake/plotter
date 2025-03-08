@@ -1,5 +1,5 @@
-matplotlib>=3.10.0
-numpy>=2.2.1
+matplotlib>=3.10.1
+numpy>=2.2.3
 obspy>=1.4.1
-pytz>=2024.2
+pytz>=2025.1
 Requests>=2.32.3

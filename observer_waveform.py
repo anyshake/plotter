@@ -9,7 +9,7 @@ import threading
 import matplotlib.pyplot
 import matplotlib.animation
 
-station_tcpaddr = "127.0.0.1" # Observer TCP Forwarder address
+station_tcpaddr = "192.168.0.11" # Observer TCP Forwarder address
 station_tcpport = 30000 # Observer TCP Forwarder port
 
 time_span = 120 # Time span in seconds
@@ -76,14 +76,16 @@ def make_trace(net, stn, loc, channel, sps, counts_list, timestamp):
 
 def get_data(host, port):
     global bhe_data, bhn_data, bhz_data, channel_code
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect((host, port))
-    print(f"Connected to {host}:{port}")
-    try:
-        while True:
-            try:
+    while True:
+        try:
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socket.connect((host, port))
+            print(f"Connected to {host}:{port}")
+
+            while True:
                 data = client_socket.recv(16384)
                 if not data:
+                    print("No data received, connection lost.")
                     break
                 messages = data.decode("utf-8").strip().split("\r\n")
                 for message in messages:
@@ -102,10 +104,14 @@ def get_data(host, port):
                             bhn_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
                         elif channel_code[2] == "Z":
                             bhz_data = make_trace(network_code, station_code, location_code, channel_code, sample_rate, samples, timestamp)
-            except:
-                continue
-    finally:
-        client_socket.close()
+        except Exception as e:
+            print(f"Error: {e}. Reconnecting...")
+        finally:
+            try:
+                client_socket.close()
+            except Exception:
+                pass
+            time.sleep(1)
 
 def update(frame):
     try:

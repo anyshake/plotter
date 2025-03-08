@@ -3,7 +3,7 @@
 
 ## Install
 
-Recommand Python version: 3.11.9+
+Recommand Python version: 3.12+
 
 `
 pip install -r requirements.txt
