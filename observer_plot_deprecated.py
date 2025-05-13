@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
 import os
-import json
-import time
-import pytz
 import obspy
 import numpy
 import requests
@@ -75,7 +72,7 @@ def update(frame):
         fig.clf()
         ax = fig.add_subplot(111)
         ax.set_axis_off()
-        now_utc = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
         start_time_utc = now_utc - datetime.timedelta(hours=hours)
         start_time_utc = start_time_utc.replace(minute=0, second=0, microsecond=0)
         end_time_utc = now_utc
