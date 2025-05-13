@@ -24,24 +24,42 @@ matplotlib.pyplot.subplots_adjust(left=0, right=1, top=1, bottom=0, hspace=0, ws
 
 def get_checksum(message: str) -> int:
     fields = message.split(",")
-    if len(fields) < 8:
-        raise ValueError("message fields length is less than 8")
-    data_arr = [int(field) for field in fields[7:-1]]
+
+    # Minimum message fields length is 7 (only 1 sample)
+    if len(fields) < 7:
+        raise ValueError("message fields length is less than 7")
+
+    # Convert data fields to int32
+    data_arr = []
+    for field in fields[6:-1]:
+        try:
+            data = int(field)
+        except ValueError as e:
+            raise e
+        data_arr.append(data)
+
+    # Get message checksum by XOR operation
     checksum = 0
     for data in data_arr:
-        bytes_data = struct.pack("<i", data)
+        bytes_data = struct.pack("<i", data)  # int32 little-endian format
         for byte in bytes_data:
             checksum ^= byte
+
     return checksum
 
 
 def compare_checksum(message: str):
+    # Find checksum index
     checksum_index = message.find("*")
     if checksum_index == -1:
         raise ValueError("checksum not found in message")
-    msg_checksum = int(message[checksum_index + 1 : checksum_index + 3], 16)
+    checksum_index += 1
+    msg_checksum = int(message[checksum_index : checksum_index + 2], 16)
     calc_checksum = get_checksum(message)
-    return msg_checksum == calc_checksum
+    if msg_checksum == calc_checksum:
+        return True
+    else:
+        return False
 
 
 def resample_trace(trace, target_sampling_rate):
@@ -65,71 +83,58 @@ def make_trace(net, stn, loc, channel, sps, counts_list, timestamp):
 
 def get_data(host, port):
     global bhe_data, bhn_data, bhz_data, channel_code
-    buffer = ""
     while True:
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(5)
             client_socket.connect((host, port))
             print(f"Connected to {host}:{port}")
+
             while True:
-                recv_data = client_socket.recv(16384)
-                if not recv_data:
+                data = client_socket.recv(16384)
+                if not data:
                     print("No data received, connection lost.")
                     break
-                buffer += recv_data.decode("utf-8")
-                while "\r\n" in buffer:
-                    line, buffer = buffer.split("\r\n", 1)
-                    if not line.strip():
-                        continue
-                    try:
-                        if compare_checksum(line):
-                            # 在确认 checksum 通过后，替换原有的字段解析部分：
-                            msg = line.split("*")[0].rstrip(",")  # 去掉末尾所有逗号
-                            fields = msg.split(",")
-                            # ➔ ['$n', network, station, location, channel, timestamp_ms, sample_rate, sample1, …]
-                            index = int(fields[0][1:])  # 序号
-                            network_code = fields[1]  # 网络代码
-                            station_code = fields[2]  # 观测台
-                            location_code = fields[3]  # 位置代码
-                            channel_code = fields[4]  # 通道，如 EHZ
-                            timestamp = int(fields[5]) / 1000  # 毫秒转秒
-                            sample_rate = int(fields[6])
-                            samples = list(map(int, fields[7:]))
-                            # 只处理轴向为 E/N/Z 的通道
-                            if index in [1, 2, 3]:
-                                if channel_code[2] == "E":
-                                    bhe_data = make_trace(
-                                        network_code,
-                                        station_code,
-                                        location_code,
-                                        channel_code,
-                                        sample_rate,
-                                        samples,
-                                        timestamp,
-                                    )
-                                elif channel_code[2] == "N":
-                                    bhn_data = make_trace(
-                                        network_code,
-                                        station_code,
-                                        location_code,
-                                        channel_code,
-                                        sample_rate,
-                                        samples,
-                                        timestamp,
-                                    )
-                                elif channel_code[2] == "Z":
-                                    bhz_data = make_trace(
-                                        network_code,
-                                        station_code,
-                                        location_code,
-                                        channel_code,
-                                        sample_rate,
-                                        samples,
-                                        timestamp,
-                                    )
-                    except Exception as ex:
-                        print(f"Error processing line: {ex}")
+                messages = data.decode("utf-8").strip().split("\r\n")
+                for message in messages:
+                    if compare_checksum(message):
+                        fields = message.split("*")[0].split(",")
+                        network_code = fields[0][1:]
+                        station_code = fields[1]
+                        location_code = fields[2]
+                        channel_code = fields[3]
+                        timestamp = int(fields[4]) / 1000
+                        sample_rate = int(fields[5])
+                        samples = list(map(int, fields[6:-1]))
+                        if channel_code[2] == "E":
+                            bhe_data = make_trace(
+                                network_code,
+                                station_code,
+                                location_code,
+                                channel_code,
+                                sample_rate,
+                                samples,
+                                timestamp,
+                            )
+                        elif channel_code[2] == "N":
+                            bhn_data = make_trace(
+                                network_code,
+                                station_code,
+                                location_code,
+                                channel_code,
+                                sample_rate,
+                                samples,
+                                timestamp,
+                            )
+                        elif channel_code[2] == "Z":
+                            bhz_data = make_trace(
+                                network_code,
+                                station_code,
+                                location_code,
+                                channel_code,
+                                sample_rate,
+                                samples,
+                                timestamp,
+                            )
         except Exception as e:
             print(f"Error: {e}. Reconnecting...")
         finally:
