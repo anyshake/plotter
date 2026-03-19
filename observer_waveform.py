@@ -1,25 +1,34 @@
 # -*- coding: utf-8 -*-
-import os
 import time
-import obspy
 import numpy
+import queue
 import socket
 import struct
+import signal
 import threading
+from queue import Empty
 import matplotlib.pyplot
 import matplotlib.animation
+from matplotlib.artist import Artist
+from obspy import UTCDateTime, Stream, Trace
 
-station_tcpaddr = "192.168.0.11"  # Observer TCP Forwarder address
+station_tcpaddr = "127.0.0.1"  # Observer TCP Forwarder address
 station_tcpport = 30000  # Observer TCP Forwarder port
 
 time_span = 120  # Time span in seconds
 refresh_time = 1000  # Refresh time in milliseconds
 window_size = 2  # Spectrogram window size in seconds
 overlap_percent = 86  # Spectrogram overlap in percent
-spectrogram_power_range = [20, 160]  # Spectrogram power range in dB
+spectrogram_power_range = [20, 140]  # Spectrogram power range in dB
 
+processing_queue = queue.Queue(maxsize=1000)
 fig, axs = matplotlib.pyplot.subplots(6, 1, num="Observer Waveform", figsize=(9.6, 7.0))
 matplotlib.pyplot.subplots_adjust(left=0, right=1, top=1, bottom=0, hspace=0, wspace=0)
+
+stop_event = threading.Event()
+worker_thread: threading.Thread | None = None
+ani = None
+channel_code = "EHZ"
 
 
 def get_checksum(message: str) -> int:
@@ -44,110 +53,138 @@ def compare_checksum(message: str):
     return msg_checksum == calc_checksum
 
 
+def make_trace(net, stn, loc, channel, sps, counts_list, timestamp):
+    trace = Trace(data=numpy.ma.MaskedArray(counts_list, dtype=numpy.float64))
+    trace.stats.network = net
+    trace.stats.station = stn
+    trace.stats.location = loc
+    trace.stats.channel = channel
+    trace.stats.sampling_rate = sps
+    trace.stats.starttime = UTCDateTime(timestamp)
+    return trace
+
+
 def resample_trace(trace, target_sampling_rate):
     if trace.stats.sampling_rate != target_sampling_rate:
         trace.interpolate(target_sampling_rate)
     return trace
 
 
-def make_trace(net, stn, loc, channel, sps, counts_list, timestamp):
-    trace = obspy.core.Trace(
-        data=numpy.ma.MaskedArray(counts_list, dtype=numpy.float64)
-    )
-    trace.stats.network = net
-    trace.stats.station = stn
-    trace.stats.location = loc
-    trace.stats.channel = channel
-    trace.stats.sampling_rate = sps
-    trace.stats.starttime = obspy.UTCDateTime(timestamp)
-    return trace
-
-
 def get_data(host, port):
-    global bhe_data, bhn_data, bhz_data, channel_code
+    global channel_code
     buffer = ""
-    while True:
+
+    while not stop_event.is_set():
+        client_socket = None
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(5)
+            client_socket.settimeout(1.0)  # 短超时，方便及时退出
             client_socket.connect((host, port))
             print(f"Connected to {host}:{port}")
-            while True:
-                recv_data = client_socket.recv(16384)
+
+            while not stop_event.is_set():
+                try:
+                    recv_data = client_socket.recv(16384)
+                except socket.timeout:
+                    continue
+
                 if not recv_data:
                     print("No data received, connection lost.")
                     break
-                buffer += recv_data.decode("utf-8")
+
+                buffer += recv_data.decode("utf-8", errors="ignore")
+
                 while "\r\n" in buffer:
                     line, buffer = buffer.split("\r\n", 1)
                     if not line.strip():
                         continue
+
                     try:
                         if compare_checksum(line):
-                            # 在确认 checksum 通过后，替换原有的字段解析部分：
-                            msg = line.split("*")[0].rstrip(",")  # 去掉末尾所有逗号
+                            msg = line.split("*")[0].rstrip(",")
                             fields = msg.split(",")
-                            # ➔ ['$n', network, station, location, channel, timestamp_ms, sample_rate, sample1, …]
-                            index = int(fields[0][1:])  # 序号
-                            network_code = fields[1]  # 网络代码
-                            station_code = fields[2]  # 观测台
-                            location_code = fields[3]  # 位置代码
-                            channel_code = fields[4]  # 通道，如 EHZ
-                            timestamp = int(fields[5]) / 1000  # 毫秒转秒
+
+                            index = int(fields[0][1:])
+                            network_code = fields[1]
+                            station_code = fields[2]
+                            location_code = fields[3]
+                            channel_code = fields[4]
+                            timestamp = int(fields[5]) / 1000
                             sample_rate = int(fields[6])
                             samples = list(map(int, fields[7:]))
-                            # 只处理轴向为 E/N/Z 的通道
-                            if index in [1, 2, 3]:
-                                if channel_code[2] == "E":
-                                    bhe_data = make_trace(
-                                        network_code,
-                                        station_code,
-                                        location_code,
-                                        channel_code,
-                                        sample_rate,
-                                        samples,
-                                        timestamp,
-                                    )
-                                elif channel_code[2] == "N":
-                                    bhn_data = make_trace(
-                                        network_code,
-                                        station_code,
-                                        location_code,
-                                        channel_code,
-                                        sample_rate,
-                                        samples,
-                                        timestamp,
-                                    )
-                                elif channel_code[2] == "Z":
-                                    bhz_data = make_trace(
-                                        network_code,
-                                        station_code,
-                                        location_code,
-                                        channel_code,
-                                        sample_rate,
-                                        samples,
-                                        timestamp,
-                                    )
+
+                            if index in [1, 2, 3] and channel_code[-1] in [
+                                "E",
+                                "N",
+                                "Z",
+                            ]:
+                                trace = make_trace(
+                                    network_code,
+                                    station_code,
+                                    location_code,
+                                    channel_code,
+                                    sample_rate,
+                                    samples,
+                                    timestamp,
+                                )
+                                st_data = Stream(traces=[trace])
+
+                                if not processing_queue.empty():
+                                    try:
+                                        existing_stream = processing_queue.get_nowait()
+                                        st_data += existing_stream
+                                    except Empty:
+                                        pass
+
+                                try:
+                                    processing_queue.put_nowait(st_data)
+                                except queue.Full:
+                                    try:
+                                        processing_queue.get_nowait()
+                                    except Empty:
+                                        pass
+                                    try:
+                                        processing_queue.put_nowait(st_data)
+                                    except queue.Full:
+                                        pass
+
                     except Exception as ex:
-                        print(f"Error processing line: {ex}")
+                        if not stop_event.is_set():
+                            print(f"Error processing line: {ex}")
+
         except Exception as e:
-            print(f"Error: {e}. Reconnecting...")
+            if not stop_event.is_set():
+                print(f"TCP Error: {e}. Reconnecting..")
+
         finally:
-            try:
-                client_socket.close()
-            except Exception:
-                pass
-            time.sleep(1)
+            if client_socket is not None:
+                try:
+                    client_socket.close()
+                except Exception:
+                    pass
+
+        # 不要一次睡太久，拆成短等待，便于及时响应退出
+        for _ in range(10):
+            if stop_event.is_set():
+                break
+            time.sleep(0.1)
 
 
-def update(frame):
+def update(frame) -> tuple[Artist, ...]:
+    if stop_event.is_set():
+        return ()
+
     try:
-        # Resample new data to match the stream sampling rate
-        bhe_resampled = resample_trace(bhe_data, bhe_stream.stats.sampling_rate)
-        bhn_resampled = resample_trace(bhn_data, bhn_stream.stats.sampling_rate)
-        bhz_resampled = resample_trace(bhz_data, bhz_stream.stats.sampling_rate)
+        st_data = processing_queue.get_nowait()
 
-        # Update streams with fixed length
+        if len(st_data) < 3:
+            return ()
+
+        components = {tr.stats.channel[-1]: tr for tr in st_data}
+        bhe_resampled = resample_trace(components["E"], bhe_stream.stats.sampling_rate)
+        bhn_resampled = resample_trace(components["N"], bhn_stream.stats.sampling_rate)
+        bhz_resampled = resample_trace(components["Z"], bhz_stream.stats.sampling_rate)
+
         for stream, new_data in zip(
             [bhe_stream, bhn_stream, bhz_stream],
             [bhe_resampled, bhn_resampled, bhz_resampled],
@@ -165,7 +202,6 @@ def update(frame):
 
             stream.stats.starttime = stream.stats.starttime + 1.0
 
-        # Plot data
         for i, (stream, component) in enumerate(
             zip(
                 [bhe_stream, bhn_stream, bhz_stream],
@@ -178,6 +214,7 @@ def update(frame):
         ):
             axs[i * 2].clear()
             axs[i * 2 + 1].clear()
+
             times = numpy.arange(stream.stats.npts) / stream.stats.sampling_rate
             waveform_data = (
                 stream.copy()
@@ -193,13 +230,18 @@ def update(frame):
                 axs[i * 2].xaxis.set_visible(False)
                 axs[i * 2].yaxis.set_visible(False)
                 axs[i * 2].set_xlim([times[0], times[-1]])
-                axs[i * 2].set_ylim(
-                    [numpy.min(waveform_data), numpy.max(waveform_data)]
-                )
+
+                ymin = float(numpy.min(waveform_data))
+                ymax = float(numpy.max(waveform_data))
+                if ymin == ymax:
+                    ymin -= 1.0
+                    ymax += 1.0
+                axs[i * 2].set_ylim([ymin, ymax])
 
             NFFT = int(stream.stats.sampling_rate * window_size)
             noverlap = int(NFFT * (overlap_percent / 100))
             spec_data = stream.copy().filter("highpass", freq=0.1, zerophase=True).data
+
             if not numpy.any(numpy.isnan(spec_data)) and not numpy.any(
                 numpy.isinf(spec_data)
             ):
@@ -215,23 +257,86 @@ def update(frame):
                 axs[i * 2 + 1].set_ylim(0, 15)
                 axs[i * 2 + 1].yaxis.set_visible(False)
                 axs[i * 2 + 1].xaxis.set_visible(False)
+
+    except Empty:
+        return ()
     except Exception as e:
-        print(f"Error plotting data: {e}")
+        if not stop_event.is_set():
+            print(f"Error plotting data: {e}")
+
+    return ()
+
+
+def shutdown(*_args):
+    global ani
+
+    if stop_event.is_set():
+        return
+
+    print("Shutting down...")
+    stop_event.set()
+
+    if ani is not None:
+        try:
+            ani.event_source.stop()
+        except Exception:
+            pass
+
+    try:
+        matplotlib.pyplot.close("all")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
-    thread1 = threading.Thread(target=get_data, args=(station_tcpaddr, station_tcpport))
-    thread1.start()
-    time.sleep(3)
-    bhe_stream = bhe_data.copy()
-    bhn_stream = bhn_data.copy()
-    bhz_stream = bhz_data.copy()
-    stream_length = int(bhe_stream.stats.sampling_rate * time_span)
-    bhe_stream.data = numpy.zeros(stream_length)
-    bhn_stream.data = numpy.zeros(stream_length)
-    bhz_stream.data = numpy.zeros(stream_length)
-    ani = matplotlib.animation.FuncAnimation(
-        fig, update, interval=refresh_time, cache_frame_data=False
+    worker_thread = threading.Thread(
+        target=get_data,
+        args=(station_tcpaddr, station_tcpport),
+        name="observer-reader",
+        daemon=True,  # 先设成 daemon，避免极端情况下解释器卡死
     )
-    matplotlib.pyplot.show()
-    os._exit(0)
+    worker_thread.start()
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+    fig.canvas.mpl_connect("close_event", shutdown)
+
+    # 初始化等待首批数据，但不要无限阻塞
+    st_data = None
+    while not stop_event.is_set():
+        try:
+            st_data = processing_queue.get(timeout=0.5)
+            if len(st_data) >= 3:
+                break
+        except Empty:
+            continue
+
+    if st_data is None or len(st_data) < 3:
+        print("No initial data received, exiting.")
+    else:
+        components = {tr.stats.channel[-1]: tr for tr in st_data}
+        bhe_stream = components["E"].copy()
+        bhn_stream = components["N"].copy()
+        bhz_stream = components["Z"].copy()
+
+        stream_length = int(bhe_stream.stats.sampling_rate * time_span)
+        bhe_stream.data = numpy.zeros(stream_length)
+        bhn_stream.data = numpy.zeros(stream_length)
+        bhz_stream.data = numpy.zeros(stream_length)
+
+        ani = matplotlib.animation.FuncAnimation(
+            fig,
+            update,
+            interval=refresh_time,
+            cache_frame_data=False,
+            blit=False,
+        )
+
+        try:
+            matplotlib.pyplot.show()
+        except KeyboardInterrupt:
+            shutdown()
+        finally:
+            shutdown()
+            if worker_thread is not None and worker_thread.is_alive():
+                worker_thread.join(timeout=2.0)
